@@ -1,0 +1,765 @@
+---
+title: "House Price Prediction"
+output: html_notebook
+---
+ 
+
+```{r}
+#read in dataset
+HousePrice = read.csv("HousePrice.csv", stringsAsFactors = TRUE)
+head(HousePrice)
+```
+Initial Exploration
+```{r}
+#initial structure of Data
+str(HousePrice)
+```
+
+Correct the structure of the data
+```{r}
+#pick out variables that needs to be categorical
+factors <- c(2,18,19,48:53,57,62,71:72,77)
+   HousePrice[,factors] <- lapply(HousePrice[,factors], factor)
+```
+Drop Columns that are not necessary
+```{r}
+#remove ID column
+HousePrice = HousePrice[,-c(1)] #ID column
+```
+
+Fix Missing Values knowing that NA in factor column means "No"_(name of the column)
+and NA in numerics will be replaced with the mean of the column
+```{r}
+#where are the Missing values
+library(VIM)
+sum(is.na(HousePrice))#6965
+ aggr(HousePrice, col=c('grey','red'), numbers=TRUE, sortVars=TRUE, labels=names(HousePrice), cex.axis=.4, gap=1,   ylab=c("Histogram of missing data","Pattern"))
+ 
+```
+Diving Data into factors and Numerics
+```{r}
+#Divide so as to explore individually later
+str(HousePrice)
+library(dplyr)
+Factores = HousePrice %>% select_if(~class(.) == 'factor')
+Numerics = HousePrice %>% select_if(~class(.) == 'integer')
+```
+Exploring the factor columns
+```{r}
+#mapping the values in the data and refactoring
+#Rating type A
+levels(Factores$ExterCond) = list(Ex = "5",Gd = "4",TA = "3",Fa = "2",Po = "1",None = "0")
+library(gdata)
+RatingsA <- mapLevels(Factores[,c('ExterQual', 'ExterCond', 'BsmtQual', 'BsmtCond', 'HeatingQC', 'KitchenQual', 'FireplaceQu', 'GarageQual', 'GarageCond', 'PoolQC')], codes=FALSE, combine=TRUE)
+mapLevels(Factores[,c('ExterQual', 'ExterCond', 'BsmtQual', 'BsmtCond', 'HeatingQC', 'KitchenQual', 'FireplaceQu', 'GarageQual', 'GarageCond', 'PoolQC')]) = RatingsA
+
+#Rating type B
+levels(Factores$BsmtFinType1) = list(GLQ = "6", ALQ = "5", BLQ = "4", Rec = "3", LwQ = "2", Unf = "1", None = "0")
+RatingsB = mapLevels(Factores['BsmtFinType1', 'BsmtFinType2'],codes=FALSE, combine=TRUE)
+mapLevels(Factores['BsmtFinType1', 'BsmtFinType2']) = RatingsB
+
+#others
+levels(Factores$BsmtExposure) = list(Gd = "4",Av = "3",Mn = "2",No = "1",None = "0") 
+levels(Factores$LotShape) = list(Reg = "3",IR1 = "2",IR2 = "1",IR3 = "0")
+levels(Factores$LandSlope) = list(Gt1 = "2",Mod = "1",Sev = "0")
+levels(Factores$Functional) = list(Typ = "7", Min1 = "6", Min2 = "5",Mod = "4",Maj1 = "3",Maj2 = "2",Sev = "1",Sav = "0")
+levels(Factores$Fence) = list(GdPrv = "4",MnPrv = "3",GdWo = "2",MnWw = "1",None = "0")
+levels(Factores$GarageType) = list(TwoTypes = "6",Attchd = "5",Basment = "4", BuiltIn = "3", CarPort = "2", Detchd = "1")
+levels(Factores$Utilities) = list(AllPub = "3",NoSewr = "2",NoSeWa = "1",ELO = "0")
+
+ #fix the factor missing values
+ library(zoo)
+library(tidyverse)
+ library(dplyr)
+Factores = Factores %>%
+  	mutate_if(is.factor, fct_explicit_na, na_level = 'No_')
+Factores = Factores[-1461,]
+
+```
+Lets explore the Numeric columns 
+```{r}
+Numerics$GarageYrBlt[is.na(Numerics$GarageYrBlt)] = 2010
+
+#fix the numeric missing values using mean
+Numerics = Numerics %>%
+  	mutate_if(is.integer, na.aggregate)
+
+#standard deviation
+stdev = as.data.frame(lapply(Numerics, sd))
+
+#are there unusual values outliers using cooks distance
+library("outliers")
+CD = lm(SalePrice ~., data = Numerics)
+CDist = cooks.distance(CD)
+
+#lets visualize it
+plot(CDist, pch="*", cex=2, main="Influential Obs by Cooks distance", ylim = c(-500,50000))
+#None to worry about
+
+#Visualize the columns
+library(ggplot2)
+    library(reshape2)
+    ggplot(data = melt(Numerics) , aes(x=value)) +
+      geom_histogram() + 
+      facet_wrap(~variable, scales = "free") #sale price is normally distributed
+
+#Investigate correlation between variables multicollinearity
+    library(caret)
+corMatrix = cor(Numerics[-23], method = "pearson",use = "pairwise")
+
+hcA = findCorrelation(corMatrix, cutoff=0.69,verbose = FALSE)
+
+hcA = sort(hcA)#9 and 13 totalbstmnt and GLlivArea
+reduced_DataA = Numerics[,-c(hcA)]
+
+#remove the ones not necessary
+Numerics = reduced_DataA
+
+#remove low correlation or too high with dependent variable saleprice
+cor2Matrix = cor(Numerics, method = "pearson",use = "pairwise")
+a = as.data.frame(cor2Matrix) #7:8,11,17:20  Bsmtfinsf2, bsmtunfsf, enclosedporch,x3ssnporch,miscval,yrsold
+
+Numerics = Numerics[-c(7:8,11,17:20)]
+
+str(Numerics)
+```
+
+Exploratory Data Analysis
+```{r}
+#join the data for exploratory analysis
+HousePriceF = cbind(Factores,Numerics)
+
+str(HousePriceF)
+
+#create new columns that give number years
+HousePriceF$YearBuiltN = 2020 - HousePriceF$YearBuilt
+HousePriceF$YearRemodAddN = 2020 - HousePriceF$YearRemodAdd
+HousePriceF$GarageYrBltN = 2020 - HousePriceF$GarageYrBlt
+
+#factor the yearbuilt column
+#HousePriceF$YearBuilt = as.factor(HousePriceF$YearBuilt)
+#HousePriceF$OverallQual = as.factor(HousePriceF$OverallQual)
+#HousePriceF$OverallCond = as.factor(HousePriceF$OverallCond)
+```
+Question 1 - 
+```{r}
+#is there a significant relationship between saleprice and building's age 
+  summary(aov(HousePriceF$SalePrice~HousePriceF$YearBuiltN)) #No there isnt
+      #visualize the relationship  
+      plot(aov(HousePriceF$SalePrice~HousePriceF$YearBuiltN))
+```
+Question 2 - what is the average saleprice based on 
+*overall condition of the house
+*Year it was built
+*Condition1 - proximity to social amenities
+*Sale condition
+```{r}
+#Overall condition of the house
+aggregate(HousePriceF$SalePrice, list(HousePriceF$OverallCond), mean)
+#year it was built
+aggregate(HousePriceF$SalePrice, list(HousePriceF$YearBuilt), mean)
+#condition
+aggregate(HousePriceF$SalePrice, list(HousePriceF$Condition1), mean)
+#sale condition
+aggregate(HousePriceF$SalePrice, list(HousePriceF$SaleCondition), mean)
+```
+Question 3 - what is the sale price distribution based on the overall quality of the house
+```{r}
+library(wesanderson)
+Q3 <- data.frame(HousePriceF$SalePrice/1000, HousePriceF$Foundation)
+colnames(Q3) = c("SalePrice","Foundation")
+
+
+## plot histogram
+Q3_hist <- ggplot(Q3, aes(x= Foundation, fill = Foundation)) + 
+    geom_bar(position = "dodge", stat = "count")  +
+    ggtitle("Type of Foundation") +
+    scale_fill_manual(values = wes_palette(n=6, name="GrandBudapest1", type = "continuous")) +
+    ylab("count") + 
+    xlab("Foundation")
+library(dplyr)
+Q3_ <- group_by(Q3[, c("SalePrice", "Foundation")], Foundation, SalePrice) %>% summarize(n_SalePrice = n())
+
+Q3_graph <- ggplot(Q3_, aes(x= SalePrice, y = n_SalePrice, color = Foundation)) + 
+    geom_line(size = 1.5)  +
+    ggtitle("What is the SalePrice distribution ?") +
+    scale_color_manual(values = wes_palette(n=6, name="GrandBudapest1", type = "continuous")) + 
+    ylab("number") + 
+    xlab("SalePrice(000s)") +
+    theme(legend.position="none")
+
+library(gridExtra)
+grid.arrange(Q3_hist, Q3_graph, ncol=2)
+```
+Question 4 - What category of house (based on age built) have the highest sale price
+```{r}
+# Get some plots of the data set
+x = HousePriceF
+#categorize claimsize
+x$SalePrice_cut = cut(as.numeric(as.character(x$SalePrice)), 
+                              c((0:8)*100000), right = FALSE, 
+                              labels = c("0-99K", "100K-199K", "200K-299K", 
+                                         "300K-399K", "400K-499K", "500K-599K", 
+                                         "600K-699K","700K+"))
+
+
+ggplot(data=x, aes(SalePrice_cut,YearBuiltN)) +
+  geom_bar(stat = "identity", aes(fill = YearBuiltN), position = "dodge") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs( title = "Building's age Vs SalePrice", x = "Sale Price($)", 
+        y = "Building Age")
+
+```
+Question 5 - Sale Price vs Month it was sold
+```{r}
+#categorize month into seasons
+x$seasons = ifelse(x$MoSold == 3|x$MoSold == 4 |x$MoSold == 5,"Spring",
+                  ifelse( x$MoSold == 6|x$MoSold == 7 |x$MoSold == 8,"Summer",
+                    ifelse(x$MoSold == 9|x$MoSold == 10 |x$MoSold == 11,"Autumn",
+                         ifelse(x$MoSold == 12|x$MoSold == 1 |x$MoSold == 2,"Winter",0))))
+  
+  
+ggplot(data=x, aes(SalePrice_cut, seasons), na.rm = TRUE) +
+  geom_bar(stat = "identity", aes(fill = seasons), position = "dodge") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs( title = "Season sold and Sale Price Category", x = "Sale Price Categories ($)", 
+        y = "Season sold Categories (Years)")
+
+```
+Question 6 - What sale type have the highest sale price
+```{r}
+ggplot(data=x, aes(SalePrice_cut,SaleType)) +
+  geom_bar(stat = "identity", aes(fill = SaleType), position = "dodge") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs( title = "Sale Type vs Sale Price", x = "Sale Price($)", 
+        y = "Sale Type")
+```
+Question 7 - Price distribution and season
+```{r}
+# First, given a list for converting the labels 
+x$seasons = as.factor(x$seasons)
+default_names = list(Autumn = "4",Spring = "3", Summer = "2", Winter = "1") 
+# Then, define a labeller to convert labels
+d_labeller = function(variable,value){
+  return(default_names[value])
+}
+ggplot(data=x, aes(x=SalePrice/1000)) + 
+  geom_histogram(binwidth=.5, colour="black", fill="white") + 
+  facet_grid(seasons ~.,labeller = d_labeller) +
+  geom_vline(data=x, aes(xintercept=mean(SalePrice/1000, na.rm=T)), 
+             linetype="dashed", size=1, colour="red") +
+  labs(title = "Histogram of Sale Price and Season", x = "Sale Price (000$)",
+       y = "Season")
+
+#The bar charts shows there is higher percentage of people buy houses across all seasons at less than 200k
+
+```
+Question 8 - At what price will people buy more even with garage attached
+```{r}
+ggplot(data=x, aes(x=SalePrice/1000, colour=GarageType)) +
+  stat_density(geom="line",position="identity") + 
+  stat_density(geom="line", aes(color = "GarageType")) +
+  labs(title = "Density of Sale Price and Garage Type", 
+       x = "Sale Price($)", y = "Density") +
+#list(TwoTypes = "6",Attchd = "5",Basment = "4", BuiltIn = "3", CarPort = "2", Detchd = "1")
+  scale_colour_discrete(name="HousePriceF", breaks=c("6", "5", "4","3","2","1","0","GarageType"),
+                         labels=c("TwoTypes","Attchd","Basment","BuiltIn", "CarPort", "Detchd","No_","AllGarage"))
+## Comment: Light blue line, which represents the density of garagetype has a high peak at claim size about 160k$. It tells us that people are liable to buy houses at that point regardless of the sale price as long as a garage is attached to the house
+```
+
+Question 10 - Sales per seasons
+```{r}
+SPStable = as.data.frame(table(x$seasons))
+SPStable$Prob = SPStable$Freq / sum(SPStable$Freq)
+colnames(SPStable) = c("SPS", "Freq", "Prob" )
+ggplot(SPStable, aes(x="", y=Prob, fill=SPS)) +
+  geom_bar(width = 1, stat = "identity") + coord_polar("y", start=0) + 
+  labs(title = "Pie Chart of SPS", y = "Probability")
+## Comment: The probability of people buying houses is higher in Summer and spring
+```
+
+Feature Engineering - Dummy Encoding and pca
+```{r}
+#select factor columns
+z = HousePriceF[,-c(71:74)] #remove Year and dependent variable 
+#factor columns
+Y = z %>% select_if(~class(.) == 'factor')
+#numeric columns
+yN = z %>% select_if(~class(.) == 'numeric')
+
+#install.packages("dummies")
+library(dummies)
+
+#dummify the factor variables
+y_D = dummy.data.frame(Y)
+
+sum(is.na(HousePriceF))
+#use pca for numeric variables
+prin_comp = prcomp(yN, scale = T, center = T)
+summary(prin_comp)
+
+
+#PC1 accounted for about 30% of the data and the first 9 PC's accounted for about 90%
+
+#run line 297 to 307 together
+screeplot(prin_comp, type = "l", npcs = 20, main = "Screeplot of the first 10 PCs")
+abline(h = 0.7, col="red", lty=5)
+legend("topright", legend=c("Eigenvalue = 0.7"),
+       col=c("red"), lty=5, cex=0.6)
+cumpro <- cumsum(prin_comp$sdev^2 / sum(prin_comp$sdev^2))
+plot(cumpro[0:20], xlab = "PC #", ylab = "Amount of explained variance", main = "Cumulative variance plot")
+abline(v = 6, col="blue", lty=5)
+abline(h = 0.75246, col="blue", lty=5)
+legend("topleft", legend=c("Cut-off @ PC6"),
+       col=c("blue"), lty=5, cex=0.6)
+
+#lets visualize if there is a cluster
+library("factoextra")
+fviz_pca_ind(prin_comp, geom.ind = "point", pointshape = 21, 
+             pointsize = 2, 
+             fill.ind = x$SalePrice_cut, 
+             col.ind = "black", 
+             palette = "jco", 
+             addEllipses = TRUE,
+             label = "var",
+             col.var = "black",
+             repel = TRUE,
+             legend.title = "Saleprice") +
+  ggtitle("2D PCA-plot from 80 feature dataset") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+#join both feature engineered data
+      pC1to8 = as.data.frame (prin_comp$x)
+      y_F = cbind(pC1to8$PC1,pC1to8$PC2,pC1to8$PC3,pC1to8$PC4,pC1to8$PC5,pC1to8$PC6,y_D,HousePriceF$SalePrice)
+      names(y_F)[c(1:6,440)] =c("PC1","PC2","PC3","PC4","PC5","PC6","SalePrice") 
+      
+```
+Modelling with regression algorithms and using genetic algorithm to select important variables
+Split data and set evaluation metric
+```{r}
+library(caret)
+#log of sale price
+y_F$SalePrice = log(y_F$SalePrice)
+
+#split data
+Data <- createDataPartition(y_F$SalePrice, p = 0.8,list = FALSE)
+HP.train = y_F[Data, ]
+HP.test = y_F[-Data, ]
+
+#set cross validation and evaluation metric
+control <- trainControl(method='cv', number=4)
+metric <- 'RMSE'
+
+#Function to calculate RMSE and mae on test set
+        calc_rmse = function(actual, predicted) {
+        sqrt(mean((actual - predicted) ^ 2))}
+        calc_mae = function(x,y){
+          mean(x-y)}
+        
+        calc_rsq = function(x,y){cor(x,y)^2}
+```
+Algo1 - Random Forest
+```{r}
+HP.rf <- train(SalePrice~., data=HP.train, method='ranger',
+                   trControl=control, metric=metric)
+        
+        #results on train set
+        View(HP.rf$results)
+        
+        #rmse#0.141
+        calc_rmse(actual = HP.test$SalePrice,
+          predicted = predict(HP.rf, HP.test))
+        
+        #mae#0.006
+        calc_mae(x = HP.test$SalePrice,
+                 y = predict(HP.rf,HP.test))
+        
+        #rsq 87%
+        calc_rsq(x = HP.test$SalePrice,
+                 y = predict(HP.rf,HP.test))
+```
+
+Algo2 - XGBoost
+```{r}
+HP.xgbTree <- train(SalePrice~., data=HP.train,  method='xgbTree',
+                   trControl=control, metric=metric)
+        
+        #results on train set
+        View(HP.xgbTree$results)
+        
+        #rmse 0.14
+        calc_rmse(actual = HP.test$SalePrice,
+          predicted = predict(HP.xgbTree, HP.test))
+        
+        #mae0.009
+        calc_mae(x = HP.test$SalePrice,
+                 y = predict(HP.xgbTree,HP.test))
+        #rsq 88%
+        calc_rsq(x = HP.test$SalePrice,
+                 y = predict(HP.xgbTree,HP.test))
+```
+
+Algo3 - SGB
+```{r}
+HP.gbm <- train(SalePrice~., data=HP.train,  method='gbm',
+                   trControl=control, metric=metric)
+        
+        #results on train set
+        View(HP.gbm$results)
+        
+        #rmse0.145
+        calc_rmse(actual = HP.test$SalePrice,
+          predicted = predict(HP.gbm, HP.test))
+        
+        #mae 0.012
+        calc_mae(x = HP.test$SalePrice,
+                 y = predict(HP.gbm,HP.test))
+        #rsq 87.3
+        calc_rsq(x = HP.test$SalePrice,
+                 y = predict(HP.gbm,HP.test))
+        
+        
+        
+```
+Algo5 - Stacking NNET, GLM, KNN,SVMRadial
+```{r}
+colnames(HP.train) <- make.names(colnames(HP.train))
+colnames(HP.test) <- make.names(colnames(HP.test))
+
+#fit models
+ModelfitNNet = train(SalePrice~., data=HP.train,  method='neuralnet',
+                   trControl=control, metric=metric)
+ModelFitSVM = train(SalePrice~., data=HP.train,  method='svmRadial',
+                   trControl=control, metric=metric)
+ModelFitKNN = train(SalePrice~., data=HP.train,  method='knn',
+                   trControl=control, metric=metric)
+ModelFitGLM = train(SalePrice~., data=HP.train,  method='glm',
+                   trControl=control, metric=metric)
+
+#predict
+predKNN = predict(ModelFitKNN,HP.test)
+predSVM = predict(ModelFitSVM,HP.test)
+predNNet = predict(ModelfitNNet,HP.test)
+predGLM = predict(ModelFitGLM,HP.test)
+
+#KNN
+   #rmse 0.17
+        calc_rmse(actual = HP.test$SalePrice,
+          predicted = predKNN)
+        
+        #mae 0.026
+        calc_mae(x = HP.test$SalePrice,
+                 y = predKNN)
+        #rsq 0.83
+        calc_rsq(x = HP.test$SalePrice,
+                 y = predKNN)
+#SVM
+   #rmse 0.14
+        calc_rmse(actual = HP.test$SalePrice,
+          predicted = predSVM)
+        
+        #mae 0.0079
+        calc_mae(x = HP.test$SalePrice,
+                 y = predSVM)
+        #rsq 0.878
+        calc_rsq(x = HP.test$SalePrice,
+                 y = predSVM)
+        
+        
+#NNET
+        #rmse 0.26
+        calc_rmse(actual = HP.test$SalePrice,
+          predicted = predNNet)
+        
+        #mae0.05
+        calc_mae(x = HP.test$SalePrice,
+                 y = predNNet)
+        #rsq 0.66
+        calc_rsq(x = HP.test$SalePrice,
+                 y = predNNet)
+        
+        
+#GLM
+          #rmse0.155
+        calc_rmse(actual = HP.test$SalePrice,
+          predicted = predGLM)
+        
+        #mae 0.01
+        calc_mae(x = HP.test$SalePrice,
+                 y = predGLM)
+        #rsq 0.86
+        calc_rsq(x = HP.test$SalePrice,
+                 y = predGLM)
+        
+        predDF = data.frame(predGLM,predNNet,predKNN,predSVM,SalePrice = HP.test$SalePrice, stringsAsFactors = F)
+        
+  HP.Stack <- train(SalePrice ~ ., data = predDF, method = "rf", metric = metric, trcontrol = control)
+   StackPred <- predict(HP.Stack, predDF)
+   
+   #Stack
+          #rmse0.06
+        calc_rmse(actual = HP.test$SalePrice,
+          predicted = StackPred)
+        
+        #mae 0.0005
+        calc_mae(x = HP.test$SalePrice,
+                 y = StackPred)
+        #rsq 0.975
+
+calc_rsq(x = HP.test$SalePrice,
+                 y = StackPred)
+   
+
+```
+Algo4-Bagged CART
+```{r}
+
+HP.treebag = train(SalePrice~., data=HP.train,  method='treebag',
+                   trControl=control, metric=metric)
+
+ #results on train set
+        View(HP.treebag$results)
+        
+        #rmse 0.19
+        calc_rmse(actual = HP.test$SalePrice,
+          predicted = predict(HP.treebag, HP.test))
+        
+        #mae 0.01
+        calc_mae(x = HP.test$SalePrice,
+                 y = predict(HP.treebag,HP.test))
+        #rsq 0.78
+        calc_rsq(x = HP.test$SalePrice,
+                 y = predict(HP.treebag,HP.test))
+```
+Variable Importance with Genetic algorithm
+
+```{r}
+#With XGB
+imp = varImp(HP.rfTree, scale = F, useModel = F)
+imp
+#PC1 contributed 75% to the prediction
+#investigate
+rotat = as.data.frame(prin_comp$rotation)
+
+ namesr <- rownames(rotat)
+  rownames(rotat) <- NULL
+  rotat <- cbind(namesr,rotat)
+az = data.frame(rotat$namesr,rotat$PC1)
+names(az)[1:2] =c("names","PC1") 
+#Check how much each variable contributed to the 75%variable importance
+VIMP = data.frame(rotat$namesr,(rotat$PC1/0.7538845)*100)
+names(VIMP)[1:2] = c("names","contrib")
+top5PC1 = VIMP %>% 
+          arrange(desc(contrib))%>% 
+          slice(1:7) #first 7 values plus next 3 values
+
+
+#Variables that are important
+
+#in the concluding paragraph I need the following
+#the best algorithm - rsq and rmse
+#the important variables  
+#the future work - clustering and GA
+#a simple advise - revolve around the variables that are important
+
+save.image("OOimage.Rdata")
+
+```
+Run algorithms on the most important variables
+Algo1 - Random Forest
+```{r}
+IV = HousePriceF[,c("GarageArea","YearBuilt","X1stFlrSF","YearRemodAdd","GarageYrBlt","MasVnrArea","TotRmsAbvGrd")]
+
+paste(VIMP$names)
+IV$SalePrice = y_F$SalePrice
+#split data
+IV.Data <- createDataPartition(IV$SalePrice, p = 0.8,list = FALSE)
+IV.train = IV[IV.Data, ]
+IV.test = IV[-IV.Data, ]
+
+#set cross validation and evaluation metric
+control <- trainControl(method='cv', number=4)
+metric <- 'RMSE'
+
+#Function to calculate RMSE and mae on test set
+        calc_rmse = function(actual, predicted) {
+        sqrt(mean((actual - predicted) ^ 2))}
+        calc_mae = function(x,y){
+          mean(x-y)}
+        
+        calc_rsq = function(x,y){cor(x,y)^2}
+```
+Algo1 - RF
+```{r}
+IV.rf <- train(SalePrice~., data=IV.train, method='ranger',
+                   trControl=control, metric=metric)
+        
+        #results on train set
+        View(IV.rf$results)
+        
+        #rmse#0.08
+        calc_rmse(actual = IV.test$SalePrice,
+          predicted = predict(IV.rf, IV.test))
+        
+        #mae#0.003
+        calc_mae(x = IV.test$SalePrice,
+                 y = predict(IV.rf,IV.test))
+        
+        #rsq 91%
+        calc_rsq(x = IV.test$SalePrice,
+                 y = predict(IV.rf,IV.test))
+```
+
+Algo2 - XGBoost
+```{r}
+IV.xgbTree <- train(SalePrice~., data=IV.train,  method='xgbTree',
+                   trControl=control, metric=metric)
+        
+        #results on train set
+        View(IV.xgbTree$results)
+        
+        #rmse 0.08
+        calc_rmse(actual = IV.test$SalePrice,
+          predicted = predict(IV.xgbTree, IV.test))
+        
+        #mae0.006
+        calc_mae(x = IV.test$SalePrice,
+                 y = predict(IV.xgbTree,IV.test))
+        #rsq 93%
+        calc_rsq(x = IV.test$SalePrice,
+                 y = predict(IV.xgbTree,IV.test))
+```
+
+Algo3 - SGB
+```{r}
+IV.gbm <- train(SalePrice~., data=IV.train,  method='gbm',
+                   trControl=control, metric=metric)
+        
+        #results on train set
+        View(IV.gbm$results)
+        
+        #rmse0.081
+        calc_rmse(actual = IV.test$SalePrice,
+          predicted = predict(IV.gbm, IV.test))
+        
+        #mae 0.009
+        calc_mae(x = IV.test$SalePrice,
+                 y = predict(IV.gbm,IV.test))
+        #rsq 89
+        calc_rsq(x = IV.test$SalePrice,
+                 y = predict(IV.gbm,IV.test))
+        
+        
+        
+```
+Algo5 - Stacking NNET, GLM, KNN,SVMRadial
+```{r}
+colnames(IV.train) <- make.names(colnames(IV.train))
+colnames(IV.test) <- make.names(colnames(IV.test))
+
+#fit models
+ModelfitNNet = train(SalePrice~., data=IV.train,  method='neuralnet',
+                   trControl=control, metric=metric)
+ModelFitSVM = train(SalePrice~., data=IV.train,  method='svmRadial',
+                   trControl=control, metric=metric)
+ModelFitKNN = train(SalePrice~., data=IV.train,  method='knn',
+                   trControl=control, metric=metric)
+ModelFitGLM = train(SalePrice~., data=IV.train,  method='glm',
+                   trControl=control, metric=metric)
+
+#predict
+predKNN = predict(ModelFitKNN,IV.test)
+predSVM = predict(ModelFitSVM,IV.test)
+predNNet = predict(ModelfitNNet,IV.test)
+predGLM = predict(ModelFitGLM,IV.test)
+
+#KNN
+   #rmse 0.10
+        calc_rmse(actual = IV.test$SalePrice,
+          predicted = predKNN)
+        
+        #mae 0.013
+        calc_mae(x = IV.test$SalePrice,
+                 y = predKNN)
+        #rsq 0.87
+        calc_rsq(x = IV.test$SalePrice,
+                 y = predKNN)
+#SVM
+   #rmse 0.09
+        calc_rmse(actual = IV.test$SalePrice,
+          predicted = predSVM)
+        
+        #mae 0.0031
+        calc_mae(x = IV.test$SalePrice,
+                 y = predSVM)
+        #rsq 0.90
+        calc_rsq(x = IV.test$SalePrice,
+                 y = predSVM)
+        
+        
+#NNET
+        #rmse 0.16
+        calc_rmse(actual = IV.test$SalePrice,
+          predicted = predNNet)
+        
+        #mae0.04
+        calc_mae(x = IV.test$SalePrice,
+                 y = predNNet)
+        #rsq 0.70
+        calc_rsq(x = IV.test$SalePrice,
+                 y = predNNet)
+        
+        
+#GLM
+          #rmse0.11
+        calc_rmse(actual = IV.test$SalePrice,
+          predicted = predGLM)
+        
+        #mae 0.009
+        calc_mae(x = IV.test$SalePrice,
+                 y = predGLM)
+        #rsq 0.90
+        calc_rsq(x = IV.test$SalePrice,
+                 y = predGLM)
+        
+        predDF = data.frame(predGLM,predNNet,predKNN,predSVM,SalePrice = IV.test$SalePrice, stringsAsFactors = F)
+        
+  IV.Stack <- train(SalePrice ~ ., data = predDF, method = "rf", metric = metric, trcontrol = control)
+   StackPred <- predict(IV.Stack, predDF)
+   
+   #Stack
+          #rmse0.04
+        calc_rmse(actual = IV.test$SalePrice,
+          predicted = StackPred)
+        
+        #mae 0.0003
+        calc_mae(x = IV.test$SalePrice,
+                 y = StackPred)
+        #rsq 0.98
+
+calc_rsq(x = IV.test$SalePrice,
+                 y = StackPred)
+   
+
+```
+Algo4-Bagged CART
+```{r}
+
+IV.treebag = train(SalePrice~., data=IV.train,  method='treebag',
+                   trControl=control, metric=metric)
+
+ #results on train set
+        View(IV.treebag$results)
+        
+        #rmse 0.13
+        calc_rmse(actual = IV.test$SalePrice,
+          predicted = predict(IV.treebag, IV.test))
+        
+        #mae 0.008
+        calc_mae(x = IV.test$SalePrice,
+                 y = predict(IV.treebag,IV.test))
+        #rsq 0.84
+        calc_rsq(x = IV.test$SalePrice,
+                 y = predict(IV.treebag,IV.test))
+```
